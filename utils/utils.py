@@ -380,11 +380,18 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             nt += nb  # cumulative targets
             ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
 
-            # GIoU
+            # GIoU of head
             pxy = ps[:, :2].sigmoid()
             pwh = ps[:, 2:4].exp().clamp(max=1E3) * anchors[i]
             pbox = torch.cat((pxy, pwh), 1)  # predicted box
-            giou = bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou(prediction, target)
+            giou = 0.3 * bbox_iou(pbox.t(), tbox[i][:, :4], x1y1x2y2=False, GIoU=True)  # giou(prediction, target)
+            lbox += (1.0 - giou).sum() if red == 'sum' else (1.0 - giou).mean()  # giou loss
+
+            # GIoU of body
+            pxy = ps[:, 4:6].sigmoid()
+            pwh = ps[:, 6:8].exp().clamp(max=1E3) * anchors[i]
+            pbox = torch.cat((pxy, pwh), 1)  # predicted box
+            giou += 0.7 * bbox_iou(pbox.t(), tbox[i][:, 4:], x1y1x2y2=False, GIoU=True)  # giou(prediction, target)
             lbox += (1.0 - giou).sum() if red == 'sum' else (1.0 - giou).mean()  # giou loss
 
             # Obj
@@ -392,15 +399,15 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 
             # Class
             if model.nc > 1:  # cls loss (only if multiple classes)
-                t = torch.full_like(ps[:, 5:], cn)  # targets
+                t = torch.full_like(ps[:, 9:], cn)  # targets
                 t[range(nb), tcls[i]] = cp
-                lcls += BCEcls(ps[:, 5:], t)  # BCE
+                lcls += BCEcls(ps[:, 9:], t)  # BCE
 
             # Append targets to text file
             # with open('targets.txt', 'a') as file:
             #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
 
-        lobj += BCEobj(pi[..., 4], tobj)  # obj loss
+        lobj += BCEobj(pi[..., 8], tobj)  # obj loss
 
     lbox *= h['giou']
     lobj *= h['obj']
@@ -421,14 +428,14 @@ def build_targets(p, targets, model):
     # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
     nt = targets.shape[0]
     tcls, tbox, indices, anch = [], [], [], []
-    gain = torch.ones(6, device=targets.device)  # normalized to gridspace gain
+    gain = torch.ones(10, device=targets.device)  # normalized to gridspace gain
     off = torch.tensor([[1, 0], [0, 1], [-1, 0], [0, -1]], device=targets.device).float()  # overlap offsets
 
     style = None
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
     for i, j in enumerate(model.yolo_layers):
         anchors = model.module.module_list[j].anchor_vec if multi_gpu else model.module_list[j].anchor_vec
-        gain[2:] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
+        gain[2:] = torch.tensor(p[i].shape)[[3, 2, 3, 2, 3, 2, 3, 2]]  # xyxy gain
         na = anchors.shape[0]  # number of anchors
         at = torch.arange(na).view(na, 1).repeat(1, nt)  # anchor tensor, same as .repeat_interleave(nt)
 
@@ -437,7 +444,7 @@ def build_targets(p, targets, model):
         if nt:
             # r = t[None, :, 4:6] / anchors[:, None]  # wh ratio
             # j = torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t']  # compare
-            j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2))
+            j = wh_iou(anchors, t[:, 4:6]) + wh_iou(anchors, t[:, 8:10]) > model.hyp['iou_t']  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2))
             a, t = at[j], t.repeat(na, 1, 1)[j]  # filter
 
             # overlaps
@@ -458,14 +465,18 @@ def build_targets(p, targets, model):
 
         # Define
         b, c = t[:, :2].long().T  # image, class
-        gxy = t[:, 2:4]  # grid xy
-        gwh = t[:, 4:6]  # grid wh
-        gij = (gxy - offsets).long()
-        gi, gj = gij.T  # grid xy indices
+        hgxy = t[:, 2:4]  # head grid xy
+        hgwh = t[:, 4:6]  # head grid wh
+        hgij = (hgxy - offsets).long()
+        hgi, hgj = hgij.T  # body grid xy indices
+        bgxy = t[:, 2:4]  # body grid xy
+        bgwh = t[:, 4:6]  # body grid wh
+        bgij = (bgxy - offsets).long()
+        bgi, bgj = bgij.T  # body grid xy indices
 
         # Append
-        indices.append((b, a, gj, gi))  # image, anchor, grid indices
-        tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
+        indices.append((b, a, bgj, bgi))  # image, anchor, head grid indices, body grid indices
+        tbox.append(torch.cat((hgxy - bgij, hgwh, bgxy - bgij, bgwh), 1))  # box
         anch.append(anchors[a])  # anchors
         tcls.append(c)  # class
         if c.shape[0]:  # if any targets
@@ -489,12 +500,12 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
     time_limit = 10.0  # seconds to quit after
 
     t = time.time()
-    nc = prediction[0].shape[1] - 5  # number of classes
+    nc = prediction[0].shape[1] - 9  # number of classes
     multi_label &= nc > 1  # multiple labels per box
     output = [None] * prediction.shape[0]
     for xi, x in enumerate(prediction):  # image index, image inference
         # Apply constraints
-        x = x[x[:, 4] > conf_thres]  # confidence
+        x = x[x[:, 8] > conf_thres]  # confidence
         x = x[((x[:, 2:4] > min_wh) & (x[:, 2:4] < max_wh)).all(1)]  # width-height
 
         # If none remain process next image
@@ -502,17 +513,17 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
             continue
 
         # Compute conf
-        x[..., 5:] *= x[..., 4:5]  # conf = obj_conf * cls_conf
+        x[..., 9:] *= x[..., 8:9]  # conf = obj_conf * cls_conf
 
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
-        box = xywh2xyxy(x[:, :4])
+        box = torch.cat((xywh2xyxy(x[:, :4]), xywh2xyxy(x[:, 4:8])), dim=-1)
 
         # Detections matrix nx6 (xyxy, conf, cls)
         if multi_label:
-            i, j = (x[:, 5:] > conf_thres).nonzero().t()
-            x = torch.cat((box[i], x[i, j + 5].unsqueeze(1), j.float().unsqueeze(1)), 1)
+            i, j = (x[:, 9:] > conf_thres).nonzero().t()
+            x = torch.cat((box[i], x[i, j + 9].unsqueeze(1), j.float().unsqueeze(1)), 1)
         else:  # best class only
-            conf, j = x[:, 5:].max(1)
+            conf, j = x[:, 9:].max(1)
             x = torch.cat((box, conf.unsqueeze(1), j.float().unsqueeze(1)), 1)[conf > conf_thres]
 
         # Filter by class
@@ -532,14 +543,14 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
         # x = x[x[:, 4].argsort(descending=True)]
 
         # Batched NMS
-        c = x[:, 5] * 0 if agnostic else x[:, 5]  # classes
-        boxes, scores = x[:, :4].clone() + c.view(-1, 1) * max_wh, x[:, 4]  # boxes (offset by class), scores
+        c = x[:, 9] * 0 if agnostic else x[:, 9]  # classes
+        boxes, scores = x[:, :8].clone() + c.view(-1, 1) * max_wh, x[:, 8]  # boxes (offset by class), scores
         i = torchvision.ops.boxes.nms(boxes, scores, iou_thres)
         if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
-            try:  # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
+            try:  # update boxes as boxes(i,8) = weights(i,n) * boxes(n,8)
                 iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
                 weights = iou * scores[None]  # box weights
-                x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
+                x[i, :8] = torch.mm(weights, x[:, :8]).float() / weights.sum(1, keepdim=True)  # merged boxes
                 # i = i[iou.sum(1) > 1]  # require redundancy
             except:  # possible CUDA error https://github.com/ultralytics/yolov3/issues/1139
                 print(x, i, x.shape, i.shape)
@@ -888,7 +899,7 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
     # Fix class - colour map
     prop_cycle = plt.rcParams['axes.prop_cycle']
     # https://stackoverflow.com/questions/51350872/python-from-color-name-to-rgb
-    hex2rgb = lambda h: tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
+    def hex2rgb(h): return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
     color_lut = [hex2rgb(h) for h in prop_cycle.by_key()['color']]
 
     for i, img in enumerate(images):

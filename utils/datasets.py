@@ -352,8 +352,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     nm += 1  # print('missing labels for image %s' % self.img_files[i])  # file missing
                     continue
 
-            if l.shape[0]:
-                assert l.shape[1] == 5, '> 5 label columns: %s' % file
+            if l.shape[0]:  # TODO
+                assert l.shape[1] == 9, '> 9 label columns: %s' % file
                 assert (l >= 0).all(), 'negative labels: %s' % file
                 assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
                 if np.unique(l, axis=0).shape[0] < l.shape[0]:  # duplicate rows
@@ -503,7 +503,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 if nL:
                     labels[:, 2] = 1 - labels[:, 2]
 
-        labels_out = torch.zeros((nL, 6))
+        labels_out = torch.zeros((nL, 10))
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
 

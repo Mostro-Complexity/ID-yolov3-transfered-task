@@ -137,7 +137,7 @@ class YOLOLayer(nn.Module):
         self.nl = len(layers)  # number of output layers (3)
         self.na = len(anchors)  # number of anchors (3)
         self.nc = nc  # number of classes (80)
-        self.no = nc + 5  # number of outputs (85)
+        self.no = nc + 9  # number of outputs (89)
         self.nx, self.ny, self.ng = 0, 0, 0  # initialize number of x, y gridpoints
         self.anchor_vec = self.anchors / self.stride
         self.anchor_wh = self.anchor_vec.view(1, self.na, 1, 1, 2)
@@ -209,10 +209,13 @@ class YOLOLayer(nn.Module):
 
         else:  # inference
             io = p.clone()  # inference output
-            io[..., :2] = torch.sigmoid(io[..., :2]) + self.grid  # xy
-            io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
-            io[..., :4] *= self.stride
-            torch.sigmoid_(io[..., 4:])
+            io[..., :2] = torch.sigmoid(io[..., :2]) + self.grid  # head xy
+            io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # head wh yolo method
+            io[..., 4:6] = torch.sigmoid(io[..., 4:6]) + self.grid  # body xy
+            io[..., 6:8] = torch.exp(io[..., 6:8]) * self.anchor_wh  # body wh yolo method
+            io[..., :8] *= self.stride
+
+            torch.sigmoid_(io[..., 8:])
             return io.view(bs, -1, self.no), p  # view [1, 3, 13, 13, 85] as [1, 507, 85]
 
 
