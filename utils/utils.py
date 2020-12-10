@@ -13,6 +13,7 @@ import cv2
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy.lib.function_base import select
 import torch
 import torch.nn as nn
 import torchvision
@@ -350,6 +351,53 @@ def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#iss
     return 1.0 - 0.5 * eps, 0.5 * eps
 
 
+def nms_for_two_boxes(bounding_boxes, confidence_score, threshold):
+    """[summary]
+
+    Parameters
+    ----------
+    bounding_boxes : [type]
+        [description]
+    confidence_score : [type]
+        [description]
+    threshold : [type]
+        [description]
+
+    Returns
+    -------
+    [type]
+        [description]
+    """
+    # If no bounding boxes, return empty list
+    if len(bounding_boxes) == 0:
+        return [], []
+
+    # Picked bounding boxes
+    selected_indices = []
+    # picked_boxes = []
+    # picked_score = []
+
+    # Sort by confidence score of bounding boxes
+    order = torch.argsort(confidence_score)
+
+    # Iterate bounding boxes
+    while order.numel() > 0:
+        # The index of largest confidence score
+        index = order[-1]
+        selected_indices.append(index)
+
+        # Pick the bounding box with largest confidence score
+        # picked_boxes.append(bounding_boxes[index])
+        # picked_score.append(confidence_score[index])
+
+        # Compute the ratio between intersection and union
+        ratio = (box_iou(bounding_boxes[None, index, :4], bounding_boxes[order[:-1], :4]) + box_iou(bounding_boxes[None, index, 4:], bounding_boxes[order[:-1], 4:])) / 2
+        left = torch.nonzero(ratio.squeeze() < threshold, as_tuple=True)[0]
+        order = order[left]
+
+    return torch.tensor(selected_indices)
+
+
 def compute_loss(p, targets, model):  # predictions, targets, model
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
@@ -545,10 +593,11 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
         # Batched NMS
         c = x[:, 9] * 0 if agnostic else x[:, 9]  # classes
         boxes, scores = x[:, :8].clone() + c.view(-1, 1) * max_wh, x[:, 8]  # boxes (offset by class), scores
-        i = torchvision.ops.boxes.nms(boxes, scores, iou_thres)
+        # i = torchvision.ops.boxes.nms(boxes[:, :4], scores, iou_thres)
+        i = nms_for_two_boxes(boxes.cpu(), scores.cpu(), iou_thres)
         if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
             try:  # update boxes as boxes(i,8) = weights(i,n) * boxes(n,8)
-                iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
+                iou = box_iou(boxes[i, :4], boxes[:, :4]) + box_iou(boxes[i, 4:], boxes[:, 4:]) > iou_thres  # iou matrix
                 weights = iou * scores[None]  # box weights
                 x[i, :8] = torch.mm(weights, x[:, :8]).float() / weights.sum(1, keepdim=True)  # merged boxes
                 # i = i[iou.sum(1) > 1]  # require redundancy
