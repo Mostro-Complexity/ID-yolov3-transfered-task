@@ -483,10 +483,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if nL:
             # convert xyxy to xywh
             labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
+            labels[:, 5:9] = xyxy2xywh(labels[:, 5:9])
 
             # Normalize coordinates 0 - 1
-            labels[:, [2, 4]] /= img.shape[0]  # height
-            labels[:, [1, 3]] /= img.shape[1]  # width
+            labels[:, [2, 4, 6, 8]] /= img.shape[0]  # height
+            labels[:, [1, 3, 5, 7]] /= img.shape[1]  # width
 
         if self.augment:
             # random left-right flip
@@ -495,6 +496,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 img = np.fliplr(img)
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
+                    labels[:, 5] = 1 - labels[:, 5]
 
             # random up-down flip
             ud_flip = False
@@ -502,6 +504,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 img = np.flipud(img)
                 if nL:
                     labels[:, 2] = 1 - labels[:, 2]
+                    labels[:, 6] = 1 - labels[:, 6]
 
         labels_out = torch.zeros((nL, 10))
         if nL:
@@ -595,6 +598,10 @@ def load_mosaic(self, index):
             labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
             labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
             labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
+            labels[:, 5] = w * (x[:, 5] - x[:, 7] / 2) + padw
+            labels[:, 6] = h * (x[:, 6] - x[:, 8] / 2) + padh
+            labels[:, 7] = w * (x[:, 5] + x[:, 7] / 2) + padw
+            labels[:, 8] = h * (x[:, 6] + x[:, 8] / 2) + padh
         labels4.append(labels)
 
     # Concat/clip labels
@@ -653,6 +660,22 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
     # https://medium.com/uruvideo/dataset-augmentation-with-random-homographies-a8f4b44830d4
     # targets = [cls, xyxy]
 
+    def get_boxes_of_wraped_points(targets, M):
+        n = len(targets)
+        if n:
+            # warp points
+            xy = np.ones((n * 4, 3))
+            xy[:, :2] = targets[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+            xy = (xy @ M.T)[:, :2].reshape(n, 8)
+
+            # create new boxes
+            x = xy[:, [0, 2, 4, 6]]
+            y = xy[:, [1, 3, 5, 7]]
+            xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
+            return xy
+        else:
+            return
+
     height = img.shape[0] + border * 2
     width = img.shape[1] + border * 2
 
@@ -679,40 +702,27 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
     if (border != 0) or (M != np.eye(3)).any():  # image changed
         img = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
 
-    # Transform label coordinates
-    n = len(targets)
-    if n:
-        # warp points
-        xy = np.ones((n * 4, 3))
-        xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
-        xy = (xy @ M.T)[:, :2].reshape(n, 8)
+    # Transform label coordinates (two box)
+    xy = np.concatenate((
+        get_boxes_of_wraped_points(targets[:, 1:5], M),
+        get_boxes_of_wraped_points(targets[:, 5:9], M)
+    ), axis=-1)
+    # reject warped points outside of image
+    xy[:, [0, 2, 4, 6]] = xy[:, [0, 2, 4, 6]].clip(0, width)
+    xy[:, [1, 3, 5, 7]] = xy[:, [1, 3, 5, 7]].clip(0, height)
+    w = xy[:, [2, 6]] - xy[:, [0, 4]]
+    h = xy[:, [3, 7]] - xy[:, [1, 5]]
+    area = w * h
+    area0 = np.stack((
+        (targets[:, 3] - targets[:, 1]) * (targets[:, 4] - targets[:, 2]),
+        (targets[:, 7] - targets[:, 5]) * (targets[:, 8] - targets[:, 6])
+    ), axis=-1)
+    ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))  # aspect ratio
+    i = (w > 4) & (h > 4) & (area / (area0 * s + 1e-16) > 0.2) & (ar < 10)
 
-        # create new boxes
-        x = xy[:, [0, 2, 4, 6]]
-        y = xy[:, [1, 3, 5, 7]]
-        xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
-
-        # # apply angle-based reduction of bounding boxes
-        # radians = a * math.pi / 180
-        # reduction = max(abs(math.sin(radians)), abs(math.cos(radians))) ** 0.5
-        # x = (xy[:, 2] + xy[:, 0]) / 2
-        # y = (xy[:, 3] + xy[:, 1]) / 2
-        # w = (xy[:, 2] - xy[:, 0]) * reduction
-        # h = (xy[:, 3] - xy[:, 1]) * reduction
-        # xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
-
-        # reject warped points outside of image
-        xy[:, [0, 2]] = xy[:, [0, 2]].clip(0, width)
-        xy[:, [1, 3]] = xy[:, [1, 3]].clip(0, height)
-        w = xy[:, 2] - xy[:, 0]
-        h = xy[:, 3] - xy[:, 1]
-        area = w * h
-        area0 = (targets[:, 3] - targets[:, 1]) * (targets[:, 4] - targets[:, 2])
-        ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))  # aspect ratio
-        i = (w > 4) & (h > 4) & (area / (area0 * s + 1e-16) > 0.2) & (ar < 10)
-
-        targets = targets[i]
-        targets[:, 1:5] = xy[i]
+    i = np.all(i, axis=-1)
+    targets = targets[i]
+    targets[:, 1:] = xy[i]
 
     return img, targets
 
