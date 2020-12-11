@@ -114,6 +114,7 @@ def detect(save_img=False):
             if det is not None and len(det):
                 # Rescale boxes from imgsz to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                det[:, 4:8] = scale_coords(img.shape[2:], det[:, 4:8], im0.shape).round()
 
                 # Print results
                 for c in det[:, -1].unique():
@@ -128,8 +129,8 @@ def detect(save_img=False):
                             file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
 
                     if save_img or view_img:  # Add bbox to image
-                        label = '%s %.2f' % (names[int(cls)], conf)
-                        plot_one_box(xyxy, im0, label=label, color=colors[int(cls)])
+                        plot_one_box(xyxy[:4], im0, label='head {:.2f}'.format(conf), color=colors[int(cls)])
+                        plot_one_box(xyxy[4:], im0, label='body angle{:s}'.format(names[int(cls)]), color=colors[int(cls)])
 
             # Print time (inference + NMS)
             print('%sDone. (%.3fs)' % (s, t2 - t1))

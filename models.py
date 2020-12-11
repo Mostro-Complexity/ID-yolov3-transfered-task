@@ -208,11 +208,12 @@ class YOLOLayer(nn.Module):
             return p_cls, xy * ng, wh
 
         else:  # inference
+            # gsize = torch.tensor(p.shape[3:1:-1],torch.float32).to(p).view(1, -1) # grid size
             io = p.clone()  # inference output
-            io[..., :2] = torch.sigmoid(io[..., :2]) + self.grid  # head xy
-            io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # head wh yolo method
             io[..., 4:6] = torch.sigmoid(io[..., 4:6]) + self.grid  # body xy
             io[..., 6:8] = torch.exp(io[..., 6:8]) * self.anchor_wh  # body wh yolo method
+            io[..., :2] = symmetry_exp(io[..., :2]) * self.anchor_wh + io[..., 4:6] # head xy
+            io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # head wh yolo method
             io[..., :8] *= self.stride
 
             torch.sigmoid_(io[..., 8:])

@@ -351,6 +351,10 @@ def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#iss
     return 1.0 - 0.5 * eps, 0.5 * eps
 
 
+def symmetry_exp(x, lshift=0):
+    return torch.exp(x + lshift) - torch.exp(-x + lshift)
+
+
 def nms_for_two_boxes(bounding_boxes, confidence_score, threshold):
     """[summary]
 
@@ -427,13 +431,11 @@ def compute_loss(p, targets, model):  # predictions, targets, model
         if nb:
             nt += nb  # cumulative targets
             ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
-
             # GIoU of head
-            pxy = ps[:, :2].sigmoid()
+            pxy = symmetry_exp(ps[:, :2]).clamp(max=1E3) * anchors[i]  # head shift
             pwh = ps[:, 2:4].exp().clamp(max=1E3) * anchors[i]
             pbox = torch.cat((pxy, pwh), 1)  # predicted box
             giou = 0.3 * bbox_iou(pbox.t(), tbox[i][:, :4], x1y1x2y2=False, GIoU=True)  # giou(prediction, target)
-            lbox += (1.0 - giou).sum() if red == 'sum' else (1.0 - giou).mean()  # giou loss
 
             # GIoU of body
             pxy = ps[:, 4:6].sigmoid()
@@ -442,7 +444,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             giou += 0.7 * bbox_iou(pbox.t(), tbox[i][:, 4:], x1y1x2y2=False, GIoU=True)  # giou(prediction, target)
             lbox += (1.0 - giou).sum() if red == 'sum' else (1.0 - giou).mean()  # giou loss
 
-            # Obj
+            # Obj of body
             tobj[b, a, gj, gi] = (1.0 - model.gr) + model.gr * giou.detach().clamp(0).type(tobj.dtype)  # giou ratio
 
             # Class
@@ -515,16 +517,15 @@ def build_targets(p, targets, model):
         b, c = t[:, :2].long().T  # image, class
         hgxy = t[:, 2:4]  # head grid xy
         hgwh = t[:, 4:6]  # head grid wh
-        hgij = (hgxy - offsets).long()
-        hgi, hgj = hgij.T  # body grid xy indices
-        bgxy = t[:, 2:4]  # body grid xy
-        bgwh = t[:, 4:6]  # body grid wh
+        # gsize = torch.tensor(p[i].shape[3:1:-1], device=targets.device, dtype=torch.float32).view(1, -1) # grid size
+        bgxy = t[:, 6:8]  # body grid xy
+        bgwh = t[:, 8:10]  # body grid wh
         bgij = (bgxy - offsets).long()
         bgi, bgj = bgij.T  # body grid xy indices
 
         # Append
         indices.append((b, a, bgj, bgi))  # image, anchor, head grid indices, body grid indices
-        tbox.append(torch.cat((hgxy - bgij, hgwh, bgxy - bgij, bgwh), 1))  # box
+        tbox.append(torch.cat((hgxy - bgxy, hgwh, bgxy - bgij, bgwh), 1))  # shift and box
         anch.append(anchors[a])  # anchors
         tcls.append(c)  # class
         if c.shape[0]:  # if any targets
