@@ -395,7 +395,7 @@ def nms_for_two_boxes(bounding_boxes, confidence_score, threshold):
         # picked_score.append(confidence_score[index])
 
         # Compute the ratio between intersection and union
-        ratio = (box_iou(bounding_boxes[None, index, :4], bounding_boxes[order[:-1], :4]) + box_iou(bounding_boxes[None, index, 4:], bounding_boxes[order[:-1], 4:])) / 2
+        ratio = 0.3 * box_iou(bounding_boxes[None, index, :4], bounding_boxes[order[:-1], :4]) + 0.7 * box_iou(bounding_boxes[None, index, 4:], bounding_boxes[order[:-1], 4:])
         left = torch.nonzero(ratio.squeeze() < threshold, as_tuple=True)[0]
         order = order[left]
 
@@ -598,7 +598,7 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
         i = nms_for_two_boxes(boxes.cpu(), scores.cpu(), iou_thres)
         if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
             try:  # update boxes as boxes(i,8) = weights(i,n) * boxes(n,8)
-                iou = box_iou(boxes[i, :4], boxes[:, :4]) + box_iou(boxes[i, 4:], boxes[:, 4:]) > iou_thres  # iou matrix
+                iou = 0.3 * box_iou(boxes[i, :4], boxes[:, :4]) + 0.7 * box_iou(boxes[i, 4:], boxes[:, 4:]) > iou_thres  # iou matrix
                 weights = iou * scores[None]  # box weights
                 x[i, :8] = torch.mm(weights, x[:, :8]).float() / weights.sum(1, keepdim=True)  # merged boxes
                 # i = i[iou.sum(1) > 1]  # require redundancy
