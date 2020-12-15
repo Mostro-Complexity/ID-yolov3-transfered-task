@@ -1,4 +1,5 @@
 import argparse
+import json
 
 from models import *  # set ONNX_EXPORT in models.py
 from utils.datasets import *
@@ -132,6 +133,45 @@ def detect(save_img=False):
                         plot_one_box(xyxy[:4], im0, label='head {:.2f}'.format(conf), color=colors[int(cls)])
                         plot_one_box(xyxy[4:], im0, label='body angle{:s}'.format(names[int(cls)]), color=colors[int(cls)])
 
+                if opt.save_labelme:
+                    shapes = [{
+                        "label": "head",
+                        "points": [[d[0], d[1]], [d[2], d[3]]],
+                        "group_id": i,
+                        "shape_type": "rectangle",
+                        "flags": {}
+                    } for i, d in enumerate(det.tolist())]
+                    shapes.extend([{
+                        "label": "body",
+                        "points": [[d[4], d[5]], [d[6], d[7]]],
+                        "group_id": i,
+                        "shape_type": "rectangle",
+                        "flags": {}
+                    } for i, d in enumerate(det.tolist())])
+                    shapes.extend([{
+                        "label": "angle{:d}".format(int(d[9])),
+                        "points": [[(d[0] + d[1]) // 2, (d[2] + d[3]) // 2]],
+                        "group_id": i,
+                        "shape_type": "point",
+                        "flags": {}
+                    } for i, d in enumerate(det.tolist())])
+                    anno_content = {
+                        "version": "4.5.6",
+                        "flags": {},
+                        "shapes": shapes,
+                        "imagePath": Path(path).name,
+                        "imageData": None,
+                        "imageHeight": im0.shape[0],
+                        "imageWidth": im0.shape[1]
+                    }
+                    out_dir = Path(save_path).parent/'labelme'
+                    if not out_dir.is_dir():
+                        out_dir.mkdir(parents=True)
+                    json.dump(anno_content, open(
+                        str(Path(save_path).parent/'labelme'/Path(path).name).replace('.jpg', '.json'),
+                        'w'
+                    ))
+
             # Print time (inference + NMS)
             print('%sDone. (%.3fs)' % (s, t2 - t1))
 
@@ -180,6 +220,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
     parser.add_argument('--view-img', action='store_true', help='display results')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
+    parser.add_argument('--save-labelme', action='store_true', help='save results to *.json with labelme format')
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
