@@ -1,7 +1,9 @@
 ## 改进
 针对每个行人实例进行检测，同时检测头部和身体，不再对目标进行分类，而是针对躯干面向的方向进行分类。  
 躯干方向示意如下：
+
 ![angle_labeling](https://user-images.githubusercontent.com/18632298/103097762-4fc51000-4643-11eb-953c-a79a1d2e44de.png)  
+
 其中**圆心**为行人所处位置。
 
 <table style="width:100%">
